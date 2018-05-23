@@ -23,6 +23,9 @@ import (
 	"os"
 	"os/signal"
 	"time"
+	 storage "k8s.io/api/storage/v1alpha1"
+        metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+        "k8s.io/client-go/tools/cache"
 
 	"github.com/golang/glog"
 	"k8s.io/client-go/informers"
@@ -44,15 +47,42 @@ const (
 
 // Command line flags
 var (
-	kubeconfig        = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
-	resync            = flag.Duration("resync", 10*time.Second, "Resync interval of the controller.")
-	connectionTimeout = flag.Duration("connection-timeout", 1*time.Minute, "Timeout for waiting for CSI driver socket.")
-	csiAddress        = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
+	snapshotter                  = flag.String("snapshotter", "", "Name of the snapshotter. The snapshotter will only create snapshot data for snapshot that request a StorageClass with a snapshotter field set equal to this name.")
+	kubeconfig                   = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
+	resync                       = flag.Duration("resync", 10*time.Second, "Resync interval of the controller.")
+	connectionTimeout            = flag.Duration("connection-timeout", 1*time.Minute, "Timeout for waiting for CSI driver socket.")
+	csiAddress                   = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
+	createSnapshotDataRetryCount = flag.Int("createSnapshotDataRetryCount", 5, "Number of retries when we create a snapshot data object for a snapshot.")
+	createSnapshotDataInterval   = flag.Duration("createSnapshotDataInterval", 10*time.Second, "Interval between retries when we create a snapshot data object for a snapshot.")
+	resyncPeriod                 = flag.Duration("resyncPeriod", 60*time.Second, "The period that should be used to re-sync the snapshot.")
 )
 
 func main() {
 	flag.Set("logtostderr", "true")
 	flag.Parse()
+
+         vs := &storage.VolumeSnapshot{
+                ObjectMeta: metav1.ObjectMeta{
+                        Namespace:"kk",
+                        Name: "test",
+		        SelfLink:"/apis/storage.k8s.io/v1alpha1/namespaces/default/volumesnapshots/snapshot-demo",
+			UID:"046722da-6084-11e8-aa97-fa163ec505d6",
+			ResourceVersion:"514",
+			CreationTimestamp:metav1.Now(),
+                },
+                Spec: storage.VolumeSnapshotSpec{
+                        PersistentVolumeClaimName: "testpvc",
+                },
+        }
+
+        key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(vs)
+        if err != nil {
+		glog.Error(err.Error())
+        }
+
+        glog.Info(key)
+        glog.Info(vs)
+
 
 	// Create the client config. Use kubeconfig if given, otherwise assume in-cluster.
 	config, err := buildConfig(*kubeconfig)
@@ -68,9 +98,6 @@ func main() {
 	}
 	factory := informers.NewSharedInformerFactory(clientset, *resync)
 
-	var handler controller.Handler
-
-	var snapshotter string
 	// Connect to CSI.
 	csiConn, err := connection.New(*csiAddress, *connectionTimeout)
 	if err != nil {
@@ -81,12 +108,6 @@ func main() {
 	// Find driver name.
 	ctx, cancel := context.WithTimeout(context.Background(), csiTimeout)
 	defer cancel()
-	snapshotter, err = csiConn.GetDriverName(ctx)
-	if err != nil {
-		glog.Error(err.Error())
-		os.Exit(1)
-	}
-	glog.V(2).Infof("CSI driver name: %q", snapshotter)
 
 	// Check it's ready
 	if err = waitForDriverReady(csiConn, *connectionTimeout); err != nil {
@@ -102,20 +123,19 @@ func main() {
 	}
 	if !supportsCreateSnapshot {
 		glog.Error("CSI driver does not support ControllerCreateSnapshot")
-                os.Exit(1)
-	} else {
-		pvcLister := factory.Core().V1().PersistentVolumeClaims().Lister()
-		vsLister := factory.Core().V1().VolumeSnapshots().Lister()
-		handler = controller.NewCSIHandler(clientset, snapshotter, csiConn, pvcLister, vsLister)
-		glog.V(2).Infof("CSI driver supports ControllerPublishUnpublish, using real CSI handler")
+		os.Exit(1)
 	}
 
-	ctrl := controller.NewCSIAttachController(
+	ctrl := controller.NewCSISnapshotController(
 		clientset,
-		snapshotter,
-		handler,
-		factory.Core().V1().VolumeSnapshots(),
-		factory.Core().V1().PersistentVolumeClaims(),
+		*snapshotter,
+		factory.Storage().V1alpha1().VolumeSnapshots(),
+		factory.Storage().V1alpha1().VolumeSnapshotDatas(),
+		*createSnapshotDataRetryCount,
+		*createSnapshotDataInterval,
+		csiConn,
+		*connectionTimeout,
+		*resyncPeriod,
 	)
 
 	// run...
@@ -153,7 +173,7 @@ func waitForDriverReady(csiConn connection.CSIConnection, timeout time.Duration)
 
 		now := time.Now()
 		if now.After(finish) {
-			return fmt.Errorf("Failed to probe the controller: %s", err)
+			return fmt.Errorf("failed to probe the controller: %s", err)
 		}
 		time.Sleep(time.Second)
 	}
