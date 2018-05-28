@@ -1,0 +1,40 @@
+# List of dependecies for CSI snapshotter
+
+[[constraint]]
+  name = "github.com/container-storage-interface/spec"
+  branch = "master"
+  
+[[constraint]]
+  branch = "master"
+  name = "github.com/golang/glog"
+
+#[[constraint]]
+#  name = "github.com/golang/mock"
+#  version = "1.0.0"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/kubernetes-csi/csi-test"
+
+[[constraint]]
+  name = "google.golang.org/grpc"
+  version = "1.9.2"
+
+[[constraint]]
+  name = "k8s.io/api"
+  branch = "snap"
+  source="https://github.com/wackxu/kubernetes.git"
+
+[[constraint]]
+  name = "k8s.io/apimachinery"
+  branch = "snap"
+  source="https://github.com/wackxu/kubernetes.git"
+
+[[constraint]]
+  name = "k8s.io/client-go"
+  branch = "snap"
+  source="https://github.com/wackxu/kubernetes.git"
+
+[[override]]
+  name = "github.com/ugorji/go"
+  revision = "8c0409fcbb70099c748d71f714529204975f6c3f"
