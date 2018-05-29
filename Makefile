@@ -25,9 +25,9 @@ TESTARGS =
 endif
 
 
-all: csi-attacher
+all: csi-snapshotter
 
-csi-attacher:
+csi-snapshotter:
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/csi-snapshotter ./cmd/csi-snapshotter
 

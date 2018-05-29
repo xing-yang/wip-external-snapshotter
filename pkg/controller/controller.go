@@ -695,7 +695,7 @@ func (ctrl *CSISnapshotController) initializeCaches(vsLister storagelisters.Volu
 	}
 	for _, vsd := range vsdList {
 		vsdClone := vsd.DeepCopy()
-		if _, err = ctrl.storeVSUpdate(vsdClone); err != nil {
+		if _, err = ctrl.storeVSDUpdate(vsdClone); err != nil {
 			glog.Errorf("error updating volume snapshot cache: %v", err)
 		}
 	}

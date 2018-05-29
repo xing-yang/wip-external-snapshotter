@@ -23,9 +23,6 @@ import (
 	"os"
 	"os/signal"
 	"time"
-	 storage "k8s.io/api/storage/v1alpha1"
-        metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-        "k8s.io/client-go/tools/cache"
 
 	"github.com/golang/glog"
 	"k8s.io/client-go/informers"
@@ -60,29 +57,6 @@ var (
 func main() {
 	flag.Set("logtostderr", "true")
 	flag.Parse()
-
-         vs := &storage.VolumeSnapshot{
-                ObjectMeta: metav1.ObjectMeta{
-                        Namespace:"kk",
-                        Name: "test",
-		        SelfLink:"/apis/storage.k8s.io/v1alpha1/namespaces/default/volumesnapshots/snapshot-demo",
-			UID:"046722da-6084-11e8-aa97-fa163ec505d6",
-			ResourceVersion:"514",
-			CreationTimestamp:metav1.Now(),
-                },
-                Spec: storage.VolumeSnapshotSpec{
-                        PersistentVolumeClaimName: "testpvc",
-                },
-        }
-
-        key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(vs)
-        if err != nil {
-		glog.Error(err.Error())
-        }
-
-        glog.Info(key)
-        glog.Info(vs)
-
 
 	// Create the client config. Use kubeconfig if given, otherwise assume in-cluster.
 	config, err := buildConfig(*kubeconfig)
