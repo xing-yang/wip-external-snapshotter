@@ -25,10 +25,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-var (
-	snapshotDataNamePrefix = "k8s-volume-snapshot"
-)
-
 func SanitizeDriverName(driver string) string {
 	re := regexp.MustCompile("[^a-zA-Z0-9-]")
 	name := re.ReplaceAllString(driver, "-")
@@ -80,10 +76,4 @@ func ConvertSnapshotStatus(status *csi.SnapshotStatus) storage.VolumeSnapshotDat
 	}
 
 	return snapDataCondition
-}
-
-// getSnapshotDataNameForSnapshot returns SnapshotData.Name for the create VolumeSnapshotData.
-// The name must be unique.
-func GetSnapshotDataNameForSnapshot(snapshot *storage.VolumeSnapshot) string {
-	return "pvc-" + string(snapshot.UID)
 }

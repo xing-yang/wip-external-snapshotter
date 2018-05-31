@@ -29,11 +29,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
-	storage "k8s.io/api/storage/v1alpha1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/api/core/v1"
-	ref "k8s.io/client-go/tools/reference"
-	"k8s.io/client-go/kubernetes/scheme"
+	storage "k8s.io/api/storage/v1alpha1"
 )
 
 // CSIConnection is gRPC connection to a remote CSI driver and abstracts all
@@ -217,25 +214,9 @@ func (c *csiConnection) CreateSnapshot(ctx context.Context, snapshot *storage.Vo
 		return nil, err
 	}
 
-	snapDataName := GetSnapshotDataNameForSnapshot(snapshot)
-	volumeSnapshotRef, err := ref.GetReference(scheme.Scheme, snapshot)
-	if err != nil {
-		return nil, fmt.Errorf("unexpected error getting snapshot reference: %v", err)
-	}
-
-	persistentVolumeRef, err := ref.GetReference(scheme.Scheme, volume)
-	if err != nil {
-		return nil, fmt.Errorf("unexpected error getting volume reference: %v", err)
-	}
-
 	// Create VolumeSnapshot in the database
 	snapshotData := &storage.VolumeSnapshotData{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: snapDataName,
-		},
 		Spec: storage.VolumeSnapshotDataSpec{
-			VolumeSnapshotRef:   volumeSnapshotRef,
-			PersistentVolumeRef: persistentVolumeRef,
 			VolumeSnapshotDataSource: storage.VolumeSnapshotDataSource{
 				CSISnapshot: &storage.CSIVolumeSnapshotSource{
 					Driver:         driverName,
@@ -318,7 +299,7 @@ func isFinalError(err error) bool {
 		return true
 	}
 	switch st.Code() {
-	case codes.Canceled,          // gRPC: Client Application cancelled the request
+	case codes.Canceled, // gRPC: Client Application cancelled the request
 		codes.DeadlineExceeded,   // gRPC: Timeout
 		codes.Unavailable,        // gRPC: Server shutting down, TCP connection broken - previous Attach() or Detach() may be still in progress.
 		codes.ResourceExhausted,  // gRPC: Server temporarily out of resources - previous Attach() or Detach() may be still in progress.

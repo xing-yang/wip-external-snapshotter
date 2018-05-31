@@ -100,17 +100,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl := controller.NewCSISnapshotController(
-		clientset,
-		*snapshotter,
-		factory.Storage().V1alpha1().VolumeSnapshots(),
-		factory.Storage().V1alpha1().VolumeSnapshotDatas(),
-		*createSnapshotDataRetryCount,
-		*createSnapshotDataInterval,
-		csiConn,
-		*connectionTimeout,
-		*resyncPeriod,
-	)
+	params := controller.ControllerParameters{
+		KubeClient:                   clientset,
+		Handler:                      controller.NewCSIHandler(csiConn, *connectionTimeout),
+		SnapshotterName:              *snapshotter,
+		CreateSnapshotDataRetryCount: *createSnapshotDataRetryCount,
+		CreateSnapshotDataInterval:   *createSnapshotDataInterval,
+		SyncPeriod:                   *resyncPeriod,
+		VolumeInformer:               factory.Core().V1().PersistentVolumes(),
+		ClaimInformer:                factory.Core().V1().PersistentVolumeClaims(),
+		VolumeSnapshotInformer:       factory.Storage().V1alpha1().VolumeSnapshots(),
+		VolumeSnapshotDataInformer:   factory.Storage().V1alpha1().VolumeSnapshotDatas(),
+	}
+
+	ctrl := controller.NewCSISnapshotController(params)
 
 	// run...
 	stopCh := make(chan struct{})
