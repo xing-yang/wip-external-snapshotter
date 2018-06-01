@@ -29,6 +29,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
+	"k8s.io/api/core/v1"
+	storage "k8s.io/api/storage/v1alpha1"
 )
 
 // CSIConnection is gRPC connection to a remote CSI driver and abstracts all
@@ -42,20 +44,18 @@ type CSIConnection interface {
 	// CREATE_DELETE_SNAPSHOT in ControllerGetCapabilities() gRPC call.
 	SupportsControllerCreateSnapshot(ctx context.Context) (bool, error)
 
-        // SupportsControllerCreateVolumeFromSnapshot returns true if the CSI
-        // driver reports CREATE_VOLUME_FROM_SNAPSHOT in ControllerGetCapabilities()
-        // gRPC call.
-        SupportsControllerCreateVolumeFromSnapshot(ctx context.Context) (bool, error)
-
-        // SupportsControllerListSnapshots returns true if the CSI driver reports
-        // LIST_SNAPSHOTS in ControllerGetCapabilities() gRPC call.
-        SupportsControllerListSnapshots(ctx context.Context) (bool, error)
+	// SupportsControllerListSnapshots returns true if the CSI driver reports
+	// LIST_SNAPSHOTS in ControllerGetCapabilities() gRPC call.
+	SupportsControllerListSnapshots(ctx context.Context) (bool, error)
 
 	// CreateSnapshot creates a snapshot for a volume
-	CreateSnapshot(ctx context.Context, sourceVolumeID string, name string, parameters map[string]string) (metadata map[string]string, err error)
+	CreateSnapshot(ctx context.Context, snapshot *storage.VolumeSnapshot, volume *v1.PersistentVolume, parameters map[string]string) (*storage.VolumeSnapshotData, error)
 
 	// DeleteSnapshot deletes a snapshot from a volume
 	DeleteSnapshot(ctx context.Context, snapshotID string) (err error)
+
+	// ListSnapshots lists snapshot from a volume
+	ListSnapshots(ctx context.Context, snapshotID string) (*storage.VolumeSnapshotDataCondition, error)
 
 	// Probe checks that the CSI driver is ready to process requests
 	Probe(ctx context.Context) error
@@ -166,60 +166,45 @@ func (c *csiConnection) SupportsControllerCreateSnapshot(ctx context.Context) (b
 	return false, nil
 }
 
-func (c *csiConnection) SupportsControllerCreateVolumefromSnapshot(ctx context.Context) (bool, error) {
-        client := csi.NewControllerClient(c.conn)
-        req := csi.ControllerGetCapabilitiesRequest{}
-
-        rsp, err := client.ControllerGetCapabilities(ctx, &req)
-        if err != nil {
-                return false, err
-        }
-        caps := rsp.GetCapabilities()
-        for _, cap := range caps {
-                if cap == nil {
-                        continue
-                }
-                rpc := cap.GetRpc()
-                if rpc == nil {
-                        continue
-                }
-                if rpc.GetType() == csi.ControllerServiceCapability_RPC_CREATE_VOLUME_FROM_SNAPSHOT {
-                        return true, nil
-                }
-        }
-        return false, nil
-}
-
 func (c *csiConnection) SupportsControllerListSnapshots(ctx context.Context) (bool, error) {
-        client := csi.NewControllerClient(c.conn)
-        req := csi.ControllerGetCapabilitiesRequest{}
+	client := csi.NewControllerClient(c.conn)
+	req := csi.ControllerGetCapabilitiesRequest{}
 
-        rsp, err := client.ControllerGetCapabilities(ctx, &req)
-        if err != nil {
-                return false, err
-        }
-        caps := rsp.GetCapabilities()
-        for _, cap := range caps {
-                if cap == nil {
-                        continue
-                }
-                rpc := cap.GetRpc()
-                if rpc == nil {
-                        continue
-                }
-                if rpc.GetType() == csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS {
-                        return true, nil
-                }
-        }
-        return false, nil
+	rsp, err := client.ControllerGetCapabilities(ctx, &req)
+	if err != nil {
+		return false, err
+	}
+	caps := rsp.GetCapabilities()
+	for _, cap := range caps {
+		if cap == nil {
+			continue
+		}
+		rpc := cap.GetRpc()
+		if rpc == nil {
+			continue
+		}
+		if rpc.GetType() == csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-func (c *csiConnection) CreateSnapshot(ctx context.Context, sourceVolumeID string, name string, parameters map[string]string) (metadata map[string]string, err error) {
+func (c *csiConnection) CreateSnapshot(ctx context.Context, snapshot *storage.VolumeSnapshot, volume *v1.PersistentVolume, parameters map[string]string) (*storage.VolumeSnapshotData, error) {
+	if volume.Spec.CSI == nil {
+		return nil, fmt.Errorf("CSIPersistentVolumeSource not defined in spec")
+	}
+
 	client := csi.NewControllerClient(c.conn)
 
+	driverName, err := c.GetDriverName(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	req := csi.CreateSnapshotRequest{
-		SourceVolumeId:        sourceVolumeID,
-		Name:                  name,
+		SourceVolumeId:        volume.Spec.CSI.VolumeHandle,
+		Name:                  snapshot.Name,
 		Parameters:            parameters,
 		CreateSnapshotSecrets: nil,
 	}
@@ -228,44 +213,61 @@ func (c *csiConnection) CreateSnapshot(ctx context.Context, sourceVolumeID strin
 	if err != nil {
 		return nil, err
 	}
-        // rsp.Snapshot.Size.SizeBytes
-        // rsp.Snapshot.Id
-        // rsp.Snapshot.SourceVolumeId
-        // rsp.Snapshot.CreatedAt
-        // rsp.Snapshot.Status
 
-        // Create VolumeSnapshot in the database
-        snapshot := &v1.VolumeSnapshot{
-                ObjectMeta: metav1.ObjectMeta{
-                        Name: share,
-                },
-                Spec: v1.VolumeSnapshotSpec{
-                        PersistentVolumeClaimName: pvcName,
-                        SnapshotDataName: snapshotDataName,
-                },
-                Status: v1.VolumeSnapshotStatus{
-                        Conditions: []v1.VolumeSnapshotCondition{
-                                nil,
-                        },
-                }
-        }
+	// Create VolumeSnapshot in the database
+	snapshotData := &storage.VolumeSnapshotData{
+		Spec: storage.VolumeSnapshotDataSpec{
+			VolumeSnapshotDataSource: storage.VolumeSnapshotDataSource{
+				CSISnapshot: &storage.CSIVolumeSnapshotSource{
+					Driver:         driverName,
+					SnapshotHandle: rsp.Snapshot.Id,
+					CreatedAt:      rsp.Snapshot.CreatedAt,
+				},
+			},
+		},
+		Status: storage.VolumeSnapshotDataStatus{
+			Conditions: []storage.VolumeSnapshotDataCondition{
+				ConvertSnapshotStatus(rsp.Snapshot.Status),
+			},
+		},
+	}
 
-	return snapshot, nil
+	return snapshotData, nil
 }
 
 func (c *csiConnection) DeleteSnapshot(ctx context.Context, snapshotID string) (err error) {
 	client := csi.NewControllerClient(c.conn)
 
 	req := csi.DeleteSnapshotRequest{
-		SnapshotId: snapshotID,
+		SnapshotId:            snapshotID,
 		DeleteSnapshotSecrets: nil,
 	}
 
-	err = client.DeleteSnapshot(ctx, &req)
-	if err != nil {
+	if _, err := client.DeleteSnapshot(ctx, &req); err != nil {
 		return err
 	}
+
 	return nil
+}
+
+func (c *csiConnection) ListSnapshots(ctx context.Context, snapshotID string) (*storage.VolumeSnapshotDataCondition, error) {
+	client := csi.NewControllerClient(c.conn)
+
+	req := csi.ListSnapshotsRequest{
+		SnapshotId: snapshotID,
+	}
+
+	rsp, err := client.ListSnapshots(ctx, &req)
+	if err != nil {
+		return nil, err
+	}
+
+	if rsp.Entries == nil || len(rsp.Entries) == 0 {
+		return nil, fmt.Errorf("can not find snapshot for snapshotID %s", snapshotID)
+	}
+
+	snapDataCon := ConvertSnapshotStatus(rsp.Entries[0].Snapshot.Status)
+	return &snapDataCon, nil
 }
 
 func (c *csiConnection) Close() error {

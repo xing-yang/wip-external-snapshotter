@@ -44,10 +44,14 @@ const (
 
 // Command line flags
 var (
-	kubeconfig        = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
-	resync            = flag.Duration("resync", 10*time.Second, "Resync interval of the controller.")
-	connectionTimeout = flag.Duration("connection-timeout", 1*time.Minute, "Timeout for waiting for CSI driver socket.")
-	csiAddress        = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
+	snapshotter                  = flag.String("snapshotter", "", "Name of the snapshotter. The snapshotter will only create snapshot data for snapshot that request a StorageClass with a snapshotter field set equal to this name.")
+	kubeconfig                   = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
+	resync                       = flag.Duration("resync", 10*time.Second, "Resync interval of the controller.")
+	connectionTimeout            = flag.Duration("connection-timeout", 1*time.Minute, "Timeout for waiting for CSI driver socket.")
+	csiAddress                   = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
+	createSnapshotDataRetryCount = flag.Int("createSnapshotDataRetryCount", 5, "Number of retries when we create a snapshot data object for a snapshot.")
+	createSnapshotDataInterval   = flag.Duration("createSnapshotDataInterval", 10*time.Second, "Interval between retries when we create a snapshot data object for a snapshot.")
+	resyncPeriod                 = flag.Duration("resyncPeriod", 60*time.Second, "The period that should be used to re-sync the snapshot.")
 )
 
 func main() {
@@ -68,9 +72,6 @@ func main() {
 	}
 	factory := informers.NewSharedInformerFactory(clientset, *resync)
 
-	var handler controller.Handler
-
-	var snapshotter string
 	// Connect to CSI.
 	csiConn, err := connection.New(*csiAddress, *connectionTimeout)
 	if err != nil {
@@ -81,12 +82,6 @@ func main() {
 	// Find driver name.
 	ctx, cancel := context.WithTimeout(context.Background(), csiTimeout)
 	defer cancel()
-	snapshotter, err = csiConn.GetDriverName(ctx)
-	if err != nil {
-		glog.Error(err.Error())
-		os.Exit(1)
-	}
-	glog.V(2).Infof("CSI driver name: %q", snapshotter)
 
 	// Check it's ready
 	if err = waitForDriverReady(csiConn, *connectionTimeout); err != nil {
@@ -102,21 +97,23 @@ func main() {
 	}
 	if !supportsCreateSnapshot {
 		glog.Error("CSI driver does not support ControllerCreateSnapshot")
-                os.Exit(1)
-	} else {
-		pvcLister := factory.Core().V1().PersistentVolumeClaims().Lister()
-		vsLister := factory.Core().V1().VolumeSnapshots().Lister()
-		handler = controller.NewCSIHandler(clientset, snapshotter, csiConn, pvcLister, vsLister)
-		glog.V(2).Infof("CSI driver supports ControllerPublishUnpublish, using real CSI handler")
+		os.Exit(1)
 	}
 
-	ctrl := controller.NewCSIAttachController(
-		clientset,
-		snapshotter,
-		handler,
-		factory.Core().V1().VolumeSnapshots(),
-		factory.Core().V1().PersistentVolumeClaims(),
-	)
+	params := controller.ControllerParameters{
+		KubeClient:                   clientset,
+		Handler:                      controller.NewCSIHandler(csiConn, *connectionTimeout),
+		SnapshotterName:              *snapshotter,
+		CreateSnapshotDataRetryCount: *createSnapshotDataRetryCount,
+		CreateSnapshotDataInterval:   *createSnapshotDataInterval,
+		SyncPeriod:                   *resyncPeriod,
+		VolumeInformer:               factory.Core().V1().PersistentVolumes(),
+		ClaimInformer:                factory.Core().V1().PersistentVolumeClaims(),
+		VolumeSnapshotInformer:       factory.Storage().V1alpha1().VolumeSnapshots(),
+		VolumeSnapshotDataInformer:   factory.Storage().V1alpha1().VolumeSnapshotDatas(),
+	}
+
+	ctrl := controller.NewCSISnapshotController(params)
 
 	// run...
 	stopCh := make(chan struct{})
@@ -153,7 +150,7 @@ func waitForDriverReady(csiConn connection.CSIConnection, timeout time.Duration)
 
 		now := time.Now()
 		if now.After(finish) {
-			return fmt.Errorf("Failed to probe the controller: %s", err)
+			return fmt.Errorf("failed to probe the controller: %s", err)
 		}
 		time.Sleep(time.Second)
 	}

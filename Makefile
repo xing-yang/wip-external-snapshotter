@@ -16,7 +16,7 @@
 
 #GOPATH=/home/xyang/go
 IMAGE_NAME=quay.io/k8scsi/csi-snapshotter
-IMAGE_VERSION=v0.2.0
+IMAGE_VERSION=v0.1.0
 
 ifdef V
 TESTARGS = -v -args -alsologtostderr -v 5
@@ -25,11 +25,11 @@ TESTARGS =
 endif
 
 
-all: csi-attacher
+all: csi-snapshotter
 
-csi-attacher:
+csi-snapshotter:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/csi-attacher ./cmd/csi-attacher
+	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/csi-snapshotter ./cmd/csi-snapshotter
 
 clean:
 	-rm -rf bin
